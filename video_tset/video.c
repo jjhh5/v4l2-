@@ -136,14 +136,12 @@ int main(int argc, char **argv)
         close(fd);
         return -1;
     }
-    // 驱动可能不会完全满足你的请求，以它实际分配的为准
+    //以它实际分配的为准
     buf_cnt = rb.count; 
     printf("驱动实际分配了 %d 个缓冲区\n", buf_cnt);
 
-    /*
-     * 修正点：恢复为正确的两步初始化流程
-     * 第一步：查询并映射所有缓冲区
-     */
+    //查询并映射所有缓冲区
+     
     for (i = 0; i < buf_cnt; i++) {
         struct v4l2_buffer buf;
         memset(&buf, 0, sizeof(buf));
@@ -166,9 +164,7 @@ int main(int argc, char **argv)
     }
     printf("成功映射 %d 个缓冲区\n", buf_cnt);
 
-    /*
-     * 第二步：将所有缓冲区放入驱动的空闲队列 (QBUF)
-     */
+    // 将所有缓冲区放入驱动的空闲队列 (QBUF)
     for (i = 0; i < buf_cnt; i++) {
         struct v4l2_buffer buf;
         memset(&buf, 0, sizeof(buf));
@@ -248,11 +244,9 @@ int main(int argc, char **argv)
 
     printf("主循环结束，准备清理资源。\n");
 
-    // 等待子线程结束
     printf("等待亮度控制线程退出... (可能需要按一下回车来解除阻塞)\n");
     pthread_join(thread_id, NULL);
-
-    // 停止视频流
+    //停止视频流
     ioctl(fd, VIDIOC_STREAMOFF, &type);
     printf("视频流已停止。\n");
     
@@ -264,7 +258,6 @@ int main(int argc, char **argv)
     }
     printf("所有缓冲区已解除映射。\n");
 
-    // 关闭设备
     close(fd);
     printf("设备已关闭，程序退出。\n");
 
