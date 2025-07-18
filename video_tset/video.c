@@ -114,7 +114,7 @@ int main(int argc, char **argv)
     }
 
     // --- V4L2 初始化流程 ---
-    // 1. 设置格式
+    // 设置格式
     memset(&fmt, 0, sizeof(fmt));
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     fmt.fmt.pix.width = 640;
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    // 2. 请求缓冲区
+    //请求缓冲区
     memset(&rb, 0, sizeof(rb));
     rb.count = 4; // 请求4个缓冲区
     rb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -179,7 +179,7 @@ int main(int argc, char **argv)
     }
     printf("成功将 %d 个缓冲区入队\n", buf_cnt);
     
-    // 4. 启动视频流
+    // 启动视频流
     if (ioctl(fd, VIDIOC_STREAMON, &type) != 0) {
         perror("启动视频流失败");
         close(fd);
