@@ -1,4 +1,4 @@
-v4l2摄像头应用程序与驱动程序
+v4l2摄像头驱动程序与应用程序
 	video_platform是平台总线与驱动 dev是总线 drv是驱动
 	video_test是应用程序
 后续会更新LCD驱动会合并在里面
