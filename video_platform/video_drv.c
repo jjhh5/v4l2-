@@ -1,10 +1,10 @@
 /**
  * @file    vcam_driver.c
  * @author  dingyiqian
- * @brief   一个基于Platform总线的V4L2虚拟摄像头驱动程序。
- * @details 本驱动通过注册一个平台驱动，来匹配一个同名的平台设备。
- * 匹配成功后，在probe函数中完成所有V4L2设备的创建和注册，
- * 最终生成一个/dev/videoX节点。
+ * @brief   一个基于Platform总线的、支持亮度控制的V4L2虚拟摄像头驱动。
+ * @details 本驱动在V4L2虚拟摄像头的基础上，增加了标准的亮度控制接口。
+ * 用户空间程序可以通过V4L2_CID_BRIGHTNESS控制项来查询和设置亮度，
+ * 驱动会实时地将亮度效果应用到输出的视频帧上。
  */
 
 /* 内核模块和基本类型 */
@@ -14,8 +14,9 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 
-/* 内存管理 */
+/* 内存管理和数学运算 */
 #include <linux/slab.h>
+/* 修正点1: 移除对 linux/clamp.h 的依赖，使用 kernel.h 中更通用的 clamp() 宏 */
 
 /* 内核数据结构和同步机制 */
 #include <linux/list.h>
@@ -39,7 +40,7 @@
 #define IMAGE_WIDTH  800
 #define IMAGE_HEIGHT 600
 #define IMAGE_SIZE   (IMAGE_WIDTH * IMAGE_HEIGHT * 2) // YUYV格式
-#define DRIVER_NAME "vcam_plat" // 必须和设备文件的名字完全一致
+#define DRIVER_NAME "vcam_plat"
 
 struct vcam_device {
     struct v4l2_device v4l2_dev;
@@ -50,6 +51,9 @@ struct vcam_device {
     struct spinlock queued_lock;
     struct timer_list timer;
     int copy_cnt;
+
+    /* 在设备私有结构体中添加用于保存亮度的成员 */
+    int brightness;
 };
 
 struct vcam_frame_buf {
@@ -63,13 +67,16 @@ static const struct v4l2_file_operations vcam_fops;
 static const struct v4l2_ioctl_ops vcam_ioctl_ops;
 static const struct vb2_ops vcam_vb2_ops;
 
-// --- 核心功能函数实现 ---
 
-static void fill_yuyv_buffer(void *ptr, int color_type)
+/**
+ * @brief 动态生成YUYV格式的纯色图像，并应用亮度调节。
+ */
+static void fill_yuyv_buffer(void *ptr, int color_type, int brightness)
 {
     unsigned char y, u, v;
     unsigned char *buf = ptr;
     int i;
+    int y_final;
 
     switch (color_type) {
         case 0: y = 76; u = 84; v = 255; break;   // 红色
@@ -77,10 +84,19 @@ static void fill_yuyv_buffer(void *ptr, int color_type)
         default: y = 29; u = 255; v = 107; break; // 蓝色
     }
 
+    /*
+     * 亮度只影响Y(亮度)分量。我们将亮度值从[0, 255]映射到[-128, 127]的调整范围。
+     * 默认值128对应调整量0。
+     */
+    y_final = clamp(y + brightness - 128, 0, 255);
+
+    /*
+     * 在循环内部修改每一个像素的Y值，而不是在循环外部。
+     */
     for (i = 0; i < IMAGE_SIZE; i += 4) {
-        buf[i]     = y;
+        buf[i]     = y_final; // 第一个像素的亮度
         buf[i + 1] = u;
-        buf[i + 2] = y;
+        buf[i + 2] = y_final; // 第二个像素的亮度
         buf[i + 3] = v;
     }
 }
@@ -89,7 +105,6 @@ static struct vcam_frame_buf *vcam_get_next_buf(struct vcam_device *dev)
 {
     unsigned long flags;
     struct vcam_frame_buf *buf = NULL;
-
     spin_lock_irqsave(&dev->queued_lock, flags);
     if (!list_empty(&dev->queued_bufs)) {
         buf = list_first_entry(&dev->queued_bufs, struct vcam_frame_buf, list);
@@ -108,7 +123,8 @@ static void vcam_timer_expire(struct timer_list *t)
     buf = vcam_get_next_buf(dev);
     if (buf) {
         ptr = vb2_plane_vaddr(&buf->vb.vb2_buf, 0);
-        fill_yuyv_buffer(ptr, dev->copy_cnt / 10);
+        // 将当前亮度值传递给填充函数
+        fill_yuyv_buffer(ptr, dev->copy_cnt / 60, dev->brightness);
 
         vb2_set_plane_payload(&buf->vb.vb2_buf, 0, IMAGE_SIZE);
         buf->vb.vb2_buf.timestamp = ktime_get_ns();
@@ -136,7 +152,6 @@ static void vcam_buf_queue(struct vb2_buffer *vb)
     struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
     struct vcam_frame_buf *buf = container_of(vbuf, struct vcam_frame_buf, vb);
     unsigned long flags;
-
     spin_lock_irqsave(&dev->queued_lock, flags);
     list_add_tail(&buf->list, &dev->queued_bufs);
     spin_unlock_irqrestore(&dev->queued_lock, flags);
@@ -207,13 +222,65 @@ static int vcam_s_fmt_vid_cap(struct file *file, void *priv, struct v4l2_format 
     return vcam_g_fmt_vid_cap(file, priv, f);
 }
 
+
+// --- V4L2 控制项 (Controls) 的 ioctl 实现 ---
+
+static int vcam_queryctrl(struct file *file, void *priv, struct v4l2_queryctrl *qc)
+{
+    // 只支持亮度控制
+    if (qc->id == V4L2_CID_BRIGHTNESS) {
+        // 填充亮度的所有信息：类型、名字、范围、步长、默认值
+        qc->type = V4L2_CTRL_TYPE_INTEGER;
+        strscpy(qc->name, "Brightness", sizeof(qc->name));
+        qc->minimum = 0;
+        qc->maximum = 255;
+        qc->step = 1;
+        qc->default_value = 128;
+        qc->flags = 0;
+        return 0;
+    }
+    return -EINVAL;
+}
+
+static int vcam_g_ctrl(struct file *file, void *priv, struct v4l2_control *ctrl)
+{
+    // 获取与此文件实例关联的设备私有数据
+    struct vcam_device *dev = video_drvdata(file);
+
+    if (ctrl->id == V4L2_CID_BRIGHTNESS) {
+        // 从我们的私有结构体中返回当前亮度值
+        ctrl->value = dev->brightness;
+        return 0;
+    }
+    return -EINVAL;
+}
+
+static int vcam_s_ctrl(struct file *file, void *priv, struct v4l2_control *ctrl)
+{
+    struct vcam_device *dev = video_drvdata(file);
+
+    if (ctrl->id == V4L2_CID_BRIGHTNESS) {
+        // 使用 clamp 确保用户设置的值在有效范围内，然后保存到我们的私有结构体中
+        /* 修正点3: 使用 clamp() 宏代替 clamp_val() */
+        dev->brightness = clamp(ctrl->value, 0, 255);
+        return 0;
+    }
+    return -EINVAL;
+}
+
+
 static const struct v4l2_ioctl_ops vcam_ioctl_ops = {
     .vidioc_querycap      = vcam_querycap,
     .vidioc_enum_fmt_vid_cap = vcam_enum_fmt_vid_cap,
     .vidioc_g_fmt_vid_cap = vcam_g_fmt_vid_cap,
     .vidioc_s_fmt_vid_cap = vcam_s_fmt_vid_cap,
     .vidioc_try_fmt_vid_cap = vcam_s_fmt_vid_cap,
-    //内核提供以下服务
+
+    /* 将控制项相关的ioctl注册到“分机号列表”中 */
+    .vidioc_queryctrl     = vcam_queryctrl,
+    .vidioc_g_ctrl        = vcam_g_ctrl,
+    .vidioc_s_ctrl        = vcam_s_ctrl,
+
     .vidioc_reqbufs       = vb2_ioctl_reqbufs,
     .vidioc_querybuf      = vb2_ioctl_querybuf,
     .vidioc_qbuf          = vb2_ioctl_qbuf,
@@ -232,7 +299,6 @@ static const struct v4l2_file_operations vcam_fops = {
     .unlocked_ioctl = video_ioctl2,
 };
 
-
 /**
  * @brief 平台驱动的probe函数，在设备和驱动匹配成功时被内核调用。
  */
@@ -246,6 +312,9 @@ static int vcam_probe(struct platform_device *pdev)
 
     dev = kzalloc(sizeof(*dev), GFP_KERNEL);
     if (!dev) return -ENOMEM;
+    
+    /* 在 kzalloc 之后，安全地初始化亮度默认值 */
+    dev->brightness = 128;
 
     mutex_init(&dev->lock);
     spin_lock_init(&dev->queued_lock);
@@ -259,7 +328,7 @@ static int vcam_probe(struct platform_device *pdev)
     dev->vb_queue.io_modes = VB2_MMAP | VB2_USERPTR | VB2_READ;
     dev->vb_queue.drv_priv = dev;
     dev->vb_queue.buf_struct_size = sizeof(struct vcam_frame_buf);
-    dev->vb_queue.ops = &vcam_vb2_ops; //这里也可以进源码 跳转到vb_queue会看见上面的结构体进这个 vb2_queue  进去后会看到这句const struct vb2_ops		*ops; 进vb2_ops就掉用到上面的结构体来
+    dev->vb_queue.ops = &vcam_vb2_ops;
     dev->vb_queue.mem_ops = &vb2_vmalloc_memops;
     dev->vb_queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
     dev->vb_queue.lock = &dev->lock;
@@ -269,16 +338,13 @@ static int vcam_probe(struct platform_device *pdev)
     vdev = &dev->vdev;
     strscpy(vdev->name, "VirtualCam_Platform", sizeof(vdev->name));
     vdev->fops = &vcam_fops;
-    vdev->ioctl_ops = &vcam_ioctl_ops; //通过这个来连着v4l2_ioctl_ops 可以查看源码进ioctl_ops会看见const struct v4l2_ioctl_ops *ioctl_ops;这里v4l2_ioctl_ops自然就会调用上面的
+    vdev->ioctl_ops = &vcam_ioctl_ops;
     vdev->v4l2_dev = &dev->v4l2_dev;
     vdev->queue = &dev->vb_queue;
     vdev->lock = &dev->lock;
     vdev->release = video_device_release_empty;
     video_set_drvdata(vdev, dev);
     
-    /*
-     * 摄像头提供的能力 这是老内核跟新内核区别 没有查询能力就注册不上
-     */
     vdev->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING | V4L2_CAP_READWRITE;
 
     ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
@@ -324,4 +390,4 @@ module_platform_driver(vcam_pdrv);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("dingyiqian");
-MODULE_DESCRIPTION("一个基于Platform总线的V4L2虚拟摄像头驱动");
+MODULE_DESCRIPTION("一个基于Platform总线的、支持亮度控制的V4L2虚拟摄像头驱动");
