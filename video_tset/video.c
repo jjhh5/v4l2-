@@ -76,7 +76,7 @@ static void *thread_brightness_control(void *arg)
     delta = (qctrl.maximum - qctrl.minimum) / 10;
     if (delta == 0) delta = 1; // 确保步长至少为1
 
-    // --- 步骤 2: 获取当前的亮度值 ---
+    //获取当前的亮度值 ---
 
     // 告诉内核，我们要操作的是“亮度”
     ctl.id = V4L2_CID_BRIGHTNESS;
