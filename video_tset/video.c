@@ -39,50 +39,87 @@ void handle_sigint(int sig)
     quit_flag = 1;
 }
 
-// 亮度控制线程
+/**
+ * @brief 亮度控制线程的核心函数。
+ * @param arg 传递给线程的参数，这里是设备的文件描述符(fd)。
+ * @return NULL
+ */
 static void *thread_brightness_control(void *arg)
 {
+    // 将传入的void*参数安全地转换回文件描述符
     int fd = (int)(long)arg;
     int c;
-    struct v4l2_queryctrl qctrl;
-    struct v4l2_control ctl;
-    int delta;
 
+    struct v4l2_queryctrl qctrl; // 用于查询控制项属性的结构体
+    struct v4l2_control ctl;     // 用于获取/设置控制项值的结构体
+    int delta;                   // 每次调整的步长
+
+    // 查询设备是否支持亮度控制，并获取其范围 ---
+
+    // 必须先清空结构体
     memset(&qctrl, 0, sizeof(qctrl));
+    // 告诉内核，我们想查询的是“亮度”这个控制项
     qctrl.id = V4L2_CID_BRIGHTNESS;
+
+    // 发送 VIDIOC_QUERYCTRL 命令给驱动
     if (0 != ioctl(fd, VIDIOC_QUERYCTRL, &qctrl)) {
-        printf("无法查询亮度控制\n");
+        perror("ioctl VIDIOC_QUERYCTRL 失败，该设备可能不支持亮度控制");
         return NULL;
     }
-    printf("亮度控制线程启动：min=%d, max=%d. 按 'u' 增加, 'd' 减少.\n", qctrl.minimum, qctrl.maximum);
-    delta = (qctrl.maximum - qctrl.minimum) / 10;
 
+    // 如果成功，驱动会填充qctrl结构体，我们可以打印出范围信息
+    printf("亮度控制线程启动：范围 [min=%d, max=%d], 步长=%d, 默认值=%d\n",
+           qctrl.minimum, qctrl.maximum, qctrl.step, qctrl.default_value);
+    printf("请输入 'u' 增加亮度, 'd' 减少亮度, 然后按回车。\n");
+
+    // 计算一个合适的调整步长，比如范围的1/10
+    delta = (qctrl.maximum - qctrl.minimum) / 10;
+    if (delta == 0) delta = 1; // 确保步长至少为1
+
+    // --- 步骤 2: 获取当前的亮度值 ---
+
+    // 告诉内核，我们要操作的是“亮度”
     ctl.id = V4L2_CID_BRIGHTNESS;
-    ioctl(fd, VIDIOC_G_CTRL, &ctl);
+
+    // 发送 VIDIOC_G_CTRL (Get Control) 命令给驱动
+    if (0 != ioctl(fd, VIDIOC_G_CTRL, &ctl)) {
+        perror("ioctl VIDIOC_G_CTRL 失败");
+        return NULL;
+    }
+    printf("获取到当前亮度为: %d\n", ctl.value);
+
+
+    // 等待用户输入并设置新值 ---
 
     while (!quit_flag) {
+        // getchar() 是一个阻塞函数，会等待用户输入并按回车
         c = getchar();
-        if (quit_flag) break;
+        if (quit_flag) break; // 如果主线程收到退出信号，则退出循环
 
+        // 根据用户输入调整亮度值
         if (c == 'u' || c == 'U') {
             ctl.value += delta;
         } else if (c == 'd' || c == 'D') {
             ctl.value -= delta;
         } else if (c == '\n' || c == '\r') {
-            continue;
+            continue; // 忽略单独的回车
         } else {
+            printf("无效输入，请输入 'u' 或 'd'.\n");
             continue;
         }
 
+        // 边界检查，确保新值不会超出硬件支持的范围
         if (ctl.value > qctrl.maximum) ctl.value = qctrl.maximum;
         if (ctl.value < qctrl.minimum) ctl.value = qctrl.minimum;
 
+        // 发送 VIDIOC_S_CTRL (Set Control) 命令给驱动，将新值写入硬件
         if (0 != ioctl(fd, VIDIOC_S_CTRL, &ctl)) {
-            perror("设置亮度失败");
+            perror("ioctl VIDIOC_S_CTRL 设置亮度失败");
         } else {
-            printf("当前亮度已设置为: %d\n", ctl.value);
+            printf("当前亮度已成功设置为: %d\n", ctl.value);
         }
     }
+
     printf("亮度控制线程退出。\n");
     return NULL;
 }
