@@ -51,7 +51,7 @@ static void *thread_brightness_control(void *arg)
     memset(&qctrl, 0, sizeof(qctrl));
     qctrl.id = V4L2_CID_BRIGHTNESS;
 
-    // 发送 VIDIOC_QUERYCTRL 命令给驱动
+    // 发送 VIDIOC_QUERYCTRL 给驱动
     if (0 != ioctl(fd, VIDIOC_QUERYCTRL, &qctrl)) {
         perror("ioctl VIDIOC_QUERYCTRL 失败，该设备可能不支持亮度控制");
         return NULL;
@@ -66,10 +66,10 @@ static void *thread_brightness_control(void *arg)
     delta = (qctrl.maximum - qctrl.minimum) / 10;
     if (delta == 0) delta = 1; // 确保步长至少为1
 
-    //获取当前的亮度值 ---
+    //获取当前的亮度值
     ctl.id = V4L2_CID_BRIGHTNESS;
 
-    // 发送 VIDIOC_G_CTRL (Get Control) 命令给驱动
+    // 发送 VIDIOC_G_CTRL (Get Control)给驱动
     if (0 != ioctl(fd, VIDIOC_G_CTRL, &ctl)) {
         perror("ioctl VIDIOC_G_CTRL 失败");
         return NULL;
@@ -77,7 +77,7 @@ static void *thread_brightness_control(void *arg)
     printf("获取到当前亮度为: %d\n", ctl.value);
 
 
-    // 等待用户输入并设置新值 ---
+    // 等待输入并设置新值
 
     while (!quit_flag) {
         c = getchar();
