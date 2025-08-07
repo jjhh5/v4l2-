@@ -71,7 +71,7 @@ static void fill_yuyv_buffer(void *ptr, int color_type, int brightness)
     }
 
     /*
-     * 亮度只影响Y(亮度)分量。我们将亮度值从[0, 255]映射到[-128, 127]的调整范围。
+     * 亮度只影响Y(亮度)分量。亮度值从[0, 255]映射到[-128, 127]的调整范围。
      * 默认值128对应调整量0。
      */
     y_final = clamp(y + brightness - 128, 0, 255);
