@@ -8,7 +8,6 @@
  * Ctrl+C 信号进行退出并释放所有资源。
  * @platform RK3576 (同样适用于其他支持V4L2的Linux平台)
  */
-
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -39,11 +38,6 @@ void handle_sigint(int sig)
     quit_flag = 1;
 }
 
-/**
- * @brief 亮度控制线程的核心函数。
- * @param arg 传递给线程的参数，这里是设备的文件描述符(fd)。
- * @return NULL
- */
 static void *thread_brightness_control(void *arg)
 {
     // 将传入的void*参数安全地转换回文件描述符
@@ -54,14 +48,10 @@ static void *thread_brightness_control(void *arg)
     struct v4l2_control ctl;     // 用于获取/设置控制项值的结构体
     int delta;                   // 每次调整的步长
 
-    // 查询设备是否支持亮度控制，并获取其范围 ---
-
-    // 必须先清空结构体
     memset(&qctrl, 0, sizeof(qctrl));
-    // 告诉内核，我们想查询的是“亮度”这个控制项
     qctrl.id = V4L2_CID_BRIGHTNESS;
 
-    // 发送 VIDIOC_QUERYCTRL 命令给驱动
+    // 发送 VIDIOC_QUERYCTRL 给驱动
     if (0 != ioctl(fd, VIDIOC_QUERYCTRL, &qctrl)) {
         perror("ioctl VIDIOC_QUERYCTRL 失败，该设备可能不支持亮度控制");
         return NULL;
@@ -76,12 +66,10 @@ static void *thread_brightness_control(void *arg)
     delta = (qctrl.maximum - qctrl.minimum) / 10;
     if (delta == 0) delta = 1; // 确保步长至少为1
 
-    //获取当前的亮度值 ---
-
-    // 告诉内核，我们要操作的是“亮度”
+    //获取当前的亮度值
     ctl.id = V4L2_CID_BRIGHTNESS;
 
-    // 发送 VIDIOC_G_CTRL (Get Control) 命令给驱动
+    // 发送 VIDIOC_G_CTRL (Get Control)给驱动
     if (0 != ioctl(fd, VIDIOC_G_CTRL, &ctl)) {
         perror("ioctl VIDIOC_G_CTRL 失败");
         return NULL;
@@ -89,14 +77,13 @@ static void *thread_brightness_control(void *arg)
     printf("获取到当前亮度为: %d\n", ctl.value);
 
 
-    // 等待用户输入并设置新值 ---
+    // 等待输入并设置新值
 
     while (!quit_flag) {
-        // getchar() 是一个阻塞函数，会等待用户输入并按回车
         c = getchar();
-        if (quit_flag) break; // 如果主线程收到退出信号，则退出循环
+        if (quit_flag) break; 
 
-        // 根据用户输入调整亮度值
+        // 根据输入调整亮度值
         if (c == 'u' || c == 'U') {
             ctl.value += delta;
         } else if (c == 'd' || c == 'D') {
@@ -112,7 +99,7 @@ static void *thread_brightness_control(void *arg)
         if (ctl.value > qctrl.maximum) ctl.value = qctrl.maximum;
         if (ctl.value < qctrl.minimum) ctl.value = qctrl.minimum;
 
-        // 发送 VIDIOC_S_CTRL (Set Control) 命令给驱动，将新值写入硬件
+        // 发送 VIDIOC_S_CTRL (Set Control) 给驱动，将新值写入
         if (0 != ioctl(fd, VIDIOC_S_CTRL, &ctl)) {
             perror("ioctl VIDIOC_S_CTRL 设置亮度失败");
         } else {
@@ -228,7 +215,6 @@ int main(int argc, char **argv)
     pthread_t thread_id;
     if (pthread_create(&thread_id, NULL, thread_brightness_control, (void *)(long)fd) != 0) {
         perror("创建线程失败");
-        // ... 清理资源 ...
         close(fd);
         return -1;
     }
